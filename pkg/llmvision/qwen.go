@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	qwenDefaultBaseURL = "https://dashscope.aliyuncs.com/api/v1"
+	qwenDefaultBaseURL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 	qwenDefaultModel   = "qwen-vl-max"
 	qwenMaxImageSize   = 20 * 1024 * 1024 // 20 MB
 )
@@ -82,20 +82,21 @@ func (p *QwenProvider) AnalyzeImage(ctx context.Context, image []byte, prompt st
 	encoded := base64.StdEncoding.EncodeToString(image)
 	body := map[string]any{
 		"model": p.config.Model,
-		"input": map[string]any{
-			"messages": []map[string]any{
-				{
-					"role": "user",
-					"content": []map[string]any{
-						{"text": prompt},
-						{"image": fmt.Sprintf("data:image/png;base64,%s", encoded)},
+		"messages": []map[string]any{
+			{
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "text", "text": prompt},
+					{
+						"type": "image_url",
+						"image_url": map[string]string{
+							"url": fmt.Sprintf("data:image/png;base64,%s", encoded),
+						},
 					},
 				},
 			},
 		},
-		"parameters": map[string]any{
-			"max_tokens": p.config.MaxTokens,
-		},
+		"max_tokens": p.config.MaxTokens,
 	}
 
 	return p.sendRequest(ctx, body)
@@ -117,21 +118,27 @@ func (p *QwenProvider) CompareImages(ctx context.Context, img1, img2 []byte, pro
 	enc2 := base64.StdEncoding.EncodeToString(img2)
 	body := map[string]any{
 		"model": p.config.Model,
-		"input": map[string]any{
-			"messages": []map[string]any{
-				{
-					"role": "user",
-					"content": []map[string]any{
-						{"text": prompt},
-						{"image": fmt.Sprintf("data:image/png;base64,%s", enc1)},
-						{"image": fmt.Sprintf("data:image/png;base64,%s", enc2)},
+		"messages": []map[string]any{
+			{
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "text", "text": prompt},
+					{
+						"type": "image_url",
+						"image_url": map[string]string{
+							"url": fmt.Sprintf("data:image/png;base64,%s", enc1),
+						},
+					},
+					{
+						"type": "image_url",
+						"image_url": map[string]string{
+							"url": fmt.Sprintf("data:image/png;base64,%s", enc2),
+						},
 					},
 				},
 			},
 		},
-		"parameters": map[string]any{
-			"max_tokens": p.config.MaxTokens,
-		},
+		"max_tokens": p.config.MaxTokens,
 	}
 
 	return p.sendRequest(ctx, body)
@@ -144,7 +151,7 @@ func (p *QwenProvider) sendRequest(ctx context.Context, body map[string]any) (st
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		p.config.BaseURL+"/services/aigc/multimodal-generation/generation",
+		p.config.BaseURL+"/chat/completions",
 		bytes.NewReader(jsonBody))
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
@@ -171,22 +178,18 @@ func (p *QwenProvider) sendRequest(ctx context.Context, body map[string]any) (st
 	}
 
 	var result struct {
-		Output struct {
-			Choices []struct {
-				Message struct {
-					Content []struct {
-						Text string `json:"text"`
-					} `json:"content"`
-				} `json:"message"`
-			} `json:"choices"`
-		} `json:"output"`
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return "", fmt.Errorf("%w: %v", ErrInvalidResponse, err)
 	}
-	if len(result.Output.Choices) == 0 || len(result.Output.Choices[0].Message.Content) == 0 {
-		return "", fmt.Errorf("%w: no content in response", ErrInvalidResponse)
+	if len(result.Choices) == 0 {
+		return "", fmt.Errorf("%w: no choices in response", ErrInvalidResponse)
 	}
 
-	return result.Output.Choices[0].Message.Content[0].Text, nil
+	return result.Choices[0].Message.Content, nil
 }

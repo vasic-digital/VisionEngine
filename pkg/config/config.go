@@ -33,6 +33,8 @@ type Config struct {
 	AnthropicAPIKey string `json:"-"`
 	GoogleAPIKey    string `json:"-"`
 	QwenAPIKey      string `json:"-"`
+	DeepSeekAPIKey  string `json:"-"`
+	GroqAPIKey      string `json:"-"`
 
 	// Provider-specific models.
 	OpenAIModel    string `json:"openai_model,omitempty"`
@@ -77,9 +79,17 @@ func LoadFromEnv() Config {
 	}
 
 	cfg.OpenAIAPIKey = os.Getenv("OPENAI_API_KEY")
+	if cfg.OpenAIAPIKey == "" {
+		cfg.OpenAIAPIKey = os.Getenv("OPENROUTER_API_KEY")
+	}
 	cfg.AnthropicAPIKey = os.Getenv("ANTHROPIC_API_KEY")
 	cfg.GoogleAPIKey = os.Getenv("GOOGLE_API_KEY")
+	if cfg.GoogleAPIKey == "" {
+		cfg.GoogleAPIKey = os.Getenv("GEMINI_API_KEY")
+	}
 	cfg.QwenAPIKey = os.Getenv("QWEN_API_KEY")
+	cfg.DeepSeekAPIKey = os.Getenv("DEEPSEEK_API_KEY")
+	cfg.GroqAPIKey = os.Getenv("GROQ_API_KEY")
 
 	if v := os.Getenv("HELIX_VISION_OPENAI_MODEL"); v != "" {
 		cfg.OpenAIModel = v
@@ -157,6 +167,12 @@ func (c Config) AvailableProviders() []string {
 	}
 	if c.QwenAPIKey != "" {
 		providers = append(providers, "qwen")
+	}
+	if c.DeepSeekAPIKey != "" {
+		providers = append(providers, "deepseek")
+	}
+	if c.GroqAPIKey != "" {
+		providers = append(providers, "groq")
 	}
 	return providers
 }

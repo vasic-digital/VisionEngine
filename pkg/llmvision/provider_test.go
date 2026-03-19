@@ -387,19 +387,12 @@ func TestNewQwenProvider_Defaults(t *testing.T) {
 func TestQwenProvider_AnalyzeImage_Success(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/chat/completions", r.URL.Path)
 		assert.Contains(t, r.Header.Get("Authorization"), "Bearer qwen-test")
 
 		resp := map[string]any{
-			"output": map[string]any{
-				"choices": []map[string]any{
-					{
-						"message": map[string]any{
-							"content": []map[string]string{
-								{"text": "An editor with toolbar"},
-							},
-						},
-					},
-				},
+			"choices": []map[string]any{
+				{"message": map[string]string{"content": "An editor with toolbar"}},
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -422,16 +415,8 @@ func TestQwenProvider_AnalyzeImage_EmptyImage(t *testing.T) {
 func TestQwenProvider_CompareImages_Success(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]any{
-			"output": map[string]any{
-				"choices": []map[string]any{
-					{
-						"message": map[string]any{
-							"content": []map[string]string{
-								{"text": "New dialog appeared"},
-							},
-						},
-					},
-				},
+			"choices": []map[string]any{
+				{"message": map[string]string{"content": "New dialog appeared"}},
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -445,15 +430,10 @@ func TestQwenProvider_CompareImages_Success(t *testing.T) {
 	assert.Equal(t, "New dialog appeared", result)
 }
 
-func TestQwenProvider_AnalyzeImage_EmptyOutput(t *testing.T) {
+func TestQwenProvider_AnalyzeImage_EmptyChoices(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := map[string]any{
-			"output": map[string]any{
-				"choices": []any{},
-			},
-		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		json.NewEncoder(w).Encode(map[string]any{"choices": []any{}})
 	}))
 	defer server.Close()
 
