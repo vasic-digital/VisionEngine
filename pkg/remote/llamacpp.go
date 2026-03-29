@@ -38,7 +38,9 @@ type LlamaCppConfig struct {
 	// BasePort is the first port for llama-server instances.
 	BasePort int
 	// GPULayers is the number of layers to offload to GPU.
-	// Use -1 for all layers (default).
+	// Use -1 for all layers, 0 for CPU-only (default: auto).
+	// When set to -2 (auto), the deployer probes GPU
+	// availability and uses GPU if free, CPU otherwise.
 	GPULayers int
 	// ContextSize is the context window size (default 4096).
 	ContextSize int
@@ -239,6 +241,14 @@ func (d *LlamaCppDeployer) StartInstance(
 	if d.cfg.MMProjPath != "" {
 		mmproj = fmt.Sprintf("--mmproj %s ", d.cfg.MMProjPath)
 	}
+
+	// Auto-detect GPU availability: check if nvidia-smi
+	// reports >2GB free VRAM. If not, use CPU-only (0 layers).
+	gpuLayers := d.cfg.GPULayers
+	if gpuLayers == -2 || gpuLayers == -1 {
+		gpuLayers = d.probeGPU(ctx)
+	}
+
 	cmd := fmt.Sprintf(
 		"nohup %s/build/bin/llama-server "+
 			"--model %s "+
@@ -247,15 +257,19 @@ func (d *LlamaCppDeployer) StartInstance(
 			"--port %d "+
 			"--n-gpu-layers %d "+
 			"--ctx-size %d "+
-			"--threads 4 "+
+			"--threads 8 "+
 			"> /tmp/llama-server-%d.log 2>&1 &",
 		d.cfg.RepoDir,
 		d.cfg.ModelPath,
 		mmproj,
 		port,
-		d.cfg.GPULayers,
+		gpuLayers,
 		d.cfg.ContextSize,
 		port,
+	)
+	fmt.Printf(
+		"[llamacpp] starting on port %d (gpu_layers=%d)\n",
+		port, gpuLayers,
 	)
 
 	if _, err := d.sshRun(ctx, cmd); err != nil {
@@ -319,6 +333,35 @@ func (d *LlamaCppDeployer) isInstanceRunning(
 
 	// llama-server /health returns 200 when ready.
 	return resp.StatusCode == http.StatusOK
+}
+
+// probeGPU checks if the remote host has sufficient free GPU
+// VRAM (>2GB) to run inference. Returns -1 for full GPU
+// offload, 0 for CPU-only.
+func (d *LlamaCppDeployer) probeGPU(
+	ctx context.Context,
+) int {
+	out, err := d.sshRun(ctx,
+		"nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null || echo 0",
+	)
+	if err != nil {
+		fmt.Println("[llamacpp] no GPU detected, using CPU")
+		return 0
+	}
+	var freeMB int
+	fmt.Sscanf(strings.TrimSpace(out), "%d", &freeMB)
+	if freeMB > 2000 {
+		fmt.Printf(
+			"[llamacpp] GPU has %dMB free, using GPU\n",
+			freeMB,
+		)
+		return -1
+	}
+	fmt.Printf(
+		"[llamacpp] GPU has only %dMB free, using CPU\n",
+		freeMB,
+	)
+	return 0
 }
 
 // HealthCheck returns the health status of a running instance.
