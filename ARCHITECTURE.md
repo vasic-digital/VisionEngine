@@ -7,7 +7,8 @@ VisionEngine/
 ├── pkg/
 │   ├── analyzer/    # Core interfaces and types
 │   ├── graph/       # NavigationGraph (imported by HelixQA)
-│   ├── llmvision/   # LLM Vision API adapters
+│   ├── llmvision/   # LLM Vision API adapters (Gemini, Anthropic, OpenAI, Qwen, Ollama)
+│   ├── remote/      # Remote Ollama deployment via SSH (auto-install, model pull, lifecycle)
 │   ├── opencv/      # OpenCV stubs (real impl behind build tag)
 │   └── config/      # Configuration
 ├── go.mod
