@@ -51,6 +51,10 @@ type PoolConfig struct {
 	// LlamaCpp holds llama.cpp-specific configuration.
 	// Required when InferenceBackend is BackendLlamaCpp.
 	LlamaCpp *LlamaCppConfig
+
+	// MaxConcurrentPerSlot limits concurrent inference
+	// calls per slot. 0 means unlimited.
+	MaxConcurrentPerSlot int
 }
 
 // LlamaCppConfig holds configuration for llama.cpp server
@@ -118,6 +122,7 @@ type VisionSlot struct {
 	calls     int
 	totalTime time.Duration
 	errors    int
+	sem       chan struct{} // concurrency limiter; nil means unlimited
 }
 
 // Lock acquires exclusive access to this slot.
@@ -128,6 +133,21 @@ func (s *VisionSlot) Lock() {
 // Unlock releases exclusive access to this slot.
 func (s *VisionSlot) Unlock() {
 	s.mu.Unlock()
+}
+
+// Acquire blocks until a concurrency slot is available.
+// Returns immediately if no semaphore is configured.
+func (s *VisionSlot) Acquire() {
+	if s.sem != nil {
+		s.sem <- struct{}{}
+	}
+}
+
+// Release frees a concurrency slot.
+func (s *VisionSlot) Release() {
+	if s.sem != nil {
+		<-s.sem
+	}
 }
 
 // RecordCall records a vision inference call's duration and
@@ -200,6 +220,9 @@ func (p *VisionPool) AssignSlots(targets []SlotTarget) {
 			Endpoint: fmt.Sprintf("http://%s:%d", p.config.Host, p.config.BasePort),
 			Port:     p.config.BasePort,
 		}
+		if p.config.MaxConcurrentPerSlot > 0 {
+			shared.sem = make(chan struct{}, p.config.MaxConcurrentPerSlot)
+		}
 		for _, t := range targets {
 			key := slotKey(t.Platform, t.Device)
 			p.slots[key] = shared
@@ -210,11 +233,15 @@ func (p *VisionPool) AssignSlots(targets []SlotTarget) {
 	port := p.config.BasePort
 	for _, t := range targets {
 		key := slotKey(t.Platform, t.Device)
-		p.slots[key] = &VisionSlot{
+		slot := &VisionSlot{
 			ID:       key,
 			Endpoint: fmt.Sprintf("http://%s:%d", p.config.Host, port),
 			Port:     port,
 		}
+		if p.config.MaxConcurrentPerSlot > 0 {
+			slot.sem = make(chan struct{}, p.config.MaxConcurrentPerSlot)
+		}
+		p.slots[key] = slot
 		port++
 	}
 }

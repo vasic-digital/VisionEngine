@@ -231,3 +231,105 @@ func TestPoolConfig_AllFields(t *testing.T) {
 	assert.NotNil(t, cfg.LlamaCpp)
 	assert.Equal(t, 32, cfg.LlamaCpp.GPULayers)
 }
+
+func TestVisionSlot_AcquireRelease(t *testing.T) {
+	pool := remote.NewVisionPool(remote.PoolConfig{
+		Host:                 "thinker.local",
+		BasePort:             8080,
+		MaxConcurrentPerSlot: 2,
+	})
+	pool.AssignSlots([]remote.SlotTarget{
+		{Platform: "android", Device: "dev1"},
+	})
+
+	slot := pool.GetSlot("android", "dev1")
+	require.NotNil(t, slot)
+
+	// Basic acquire/release cycle must not deadlock.
+	slot.Acquire()
+	slot.Release()
+
+	slot.Acquire()
+	slot.Acquire()
+	slot.Release()
+	slot.Release()
+}
+
+func TestVisionSlot_Semaphore_Disabled(t *testing.T) {
+	// MaxConcurrentPerSlot=0 means unlimited; Acquire must never block.
+	pool := remote.NewVisionPool(remote.PoolConfig{
+		Host:                 "thinker.local",
+		BasePort:             8080,
+		MaxConcurrentPerSlot: 0,
+	})
+	pool.AssignSlots([]remote.SlotTarget{
+		{Platform: "web"},
+	})
+
+	slot := pool.GetSlot("web", "")
+	require.NotNil(t, slot)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// All of these must return immediately.
+		for range 100 {
+			slot.Acquire()
+			slot.Release()
+		}
+	}()
+
+	select {
+	case <-done:
+		// pass
+	case <-time.After(2 * time.Second):
+		t.Fatal("Acquire blocked with semaphore disabled")
+	}
+}
+
+func TestVisionSlot_Semaphore_Limits(t *testing.T) {
+	const maxConcurrent = 2
+	pool := remote.NewVisionPool(remote.PoolConfig{
+		Host:                 "thinker.local",
+		BasePort:             8080,
+		MaxConcurrentPerSlot: maxConcurrent,
+	})
+	pool.AssignSlots([]remote.SlotTarget{
+		{Platform: "android", Device: "dev1"},
+	})
+
+	slot := pool.GetSlot("android", "dev1")
+	require.NotNil(t, slot)
+
+	// Saturate the semaphore.
+	slot.Acquire()
+	slot.Acquire()
+
+	// A third Acquire must block; confirm it does not complete
+	// within a short window.
+	blocked := make(chan struct{})
+	go func() {
+		slot.Acquire()
+		close(blocked)
+	}()
+
+	select {
+	case <-blocked:
+		t.Fatal("third Acquire should have blocked but returned immediately")
+	case <-time.After(100 * time.Millisecond):
+		// Expected: still waiting.
+	}
+
+	// Release one slot; the blocked goroutine should now proceed.
+	slot.Release()
+
+	select {
+	case <-blocked:
+		// pass
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocked Acquire did not unblock after Release")
+	}
+
+	// Clean up.
+	slot.Release()
+}
