@@ -408,6 +408,215 @@ func (d *LlamaCppDeployer) probeGPU(
 	return 0
 }
 
+// StartRPCServer starts the llama.cpp RPC server on this
+// host. The RPC server exposes local compute (GPU/CPU) to
+// a central llama-server via the GGML RPC protocol. Requires
+// llama.cpp built with -DGGML_RPC=ON.
+func (d *LlamaCppDeployer) StartRPCServer(
+	ctx context.Context, port int,
+) error {
+	// Check if RPC server is already running on this port.
+	out, _ := d.sshRun(ctx,
+		fmt.Sprintf(
+			"pgrep -f 'rpc-server.*--port %d' "+
+				">/dev/null 2>&1 && echo running",
+			port,
+		),
+	)
+	if strings.TrimSpace(out) == "running" {
+		fmt.Printf(
+			"[llamacpp] RPC server already running "+
+				"on %s:%d\n",
+			d.cfg.Host, port,
+		)
+		return nil
+	}
+
+	cmd := fmt.Sprintf(
+		"cd %s && nohup ./build/bin/rpc-server "+
+			"--host 0.0.0.0 --port %d "+
+			"> /tmp/rpc-server-%d.log 2>&1 &",
+		d.cfg.RepoDir, port, port,
+	)
+	fmt.Printf(
+		"[llamacpp] starting RPC server on %s:%d\n",
+		d.cfg.Host, port,
+	)
+	_, err := d.sshRun(ctx, cmd)
+	if err != nil {
+		return fmt.Errorf(
+			"start rpc-server on %s:%d: %w",
+			d.cfg.Host, port, err,
+		)
+	}
+
+	// Brief wait for the process to bind.
+	time.Sleep(2 * time.Second)
+	return nil
+}
+
+// StopRPCServer kills the RPC server on the given port.
+func (d *LlamaCppDeployer) StopRPCServer(
+	ctx context.Context, port int,
+) {
+	cmd := fmt.Sprintf(
+		"pkill -f 'rpc-server.*--port %d'", port,
+	)
+	_, _ = d.sshRun(ctx, cmd)
+}
+
+// StartWithRPC starts llama-server configured to distribute
+// inference across remote RPC workers. The rpcWorkers slice
+// contains "host:port" addresses of running rpc-server
+// instances. The model is loaded centrally and layers are
+// distributed across workers.
+func (d *LlamaCppDeployer) StartWithRPC(
+	ctx context.Context,
+	modelPath string,
+	rpcWorkers []string,
+	port int,
+) error {
+	endpoint := fmt.Sprintf(
+		"http://%s:%d", d.cfg.Host, port,
+	)
+
+	if d.isInstanceRunning(ctx, port) {
+		fmt.Printf(
+			"[llamacpp] RPC-backed instance already "+
+				"running at %s\n",
+			endpoint,
+		)
+		return nil
+	}
+
+	rpcFlag := strings.Join(rpcWorkers, ",")
+	cmd := fmt.Sprintf(
+		"cd %s && nohup ./build/bin/llama-server "+
+			"-m %s "+
+			"--rpc %s "+
+			"-ngl 99 "+
+			"--host 0.0.0.0 "+
+			"--port %d "+
+			"--ctx-size %d "+
+			"> /tmp/llama-server-rpc-%d.log 2>&1 &",
+		d.cfg.RepoDir,
+		modelPath,
+		rpcFlag,
+		port,
+		d.cfg.ContextSize,
+		port,
+	)
+	fmt.Printf(
+		"[llamacpp] starting RPC-backed server on "+
+			"port %d with workers: %s\n",
+		port, rpcFlag,
+	)
+
+	if _, err := d.sshRun(ctx, cmd); err != nil {
+		return fmt.Errorf(
+			"start llama-server with RPC on port %d: %w",
+			port, err,
+		)
+	}
+
+	// Wait for the server to be ready.
+	for i := 0; i < 30; i++ {
+		if d.isInstanceRunning(ctx, port) {
+			fmt.Printf(
+				"[llamacpp] RPC-backed instance "+
+					"started at %s\n",
+				endpoint,
+			)
+			return nil
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf(
+		"llama-server (RPC) on port %d not ready "+
+			"after 60s",
+		port,
+	)
+}
+
+// EnsureBuiltWithRPC clones and builds llama.cpp with RPC
+// support enabled (-DGGML_RPC=ON). Falls back to a non-CUDA
+// build if CUDA is not available.
+func (d *LlamaCppDeployer) EnsureBuiltWithRPC(
+	ctx context.Context,
+) error {
+	// Check if rpc-server binary already exists.
+	out, err := d.sshRun(ctx,
+		fmt.Sprintf(
+			"test -x %s/build/bin/rpc-server && echo yes",
+			d.cfg.RepoDir,
+		),
+	)
+	if err == nil && strings.TrimSpace(out) == "yes" {
+		fmt.Printf(
+			"[llamacpp] rpc-server already built on %s\n",
+			d.cfg.Host,
+		)
+		return nil
+	}
+
+	// Clone if needed.
+	repoOut, _ := d.sshRun(ctx,
+		fmt.Sprintf("test -d %s/.git && echo yes",
+			d.cfg.RepoDir),
+	)
+	if strings.TrimSpace(repoOut) != "yes" {
+		fmt.Printf(
+			"[llamacpp] cloning llama.cpp on %s\n",
+			d.cfg.Host,
+		)
+		if _, cloneErr := d.sshRun(ctx,
+			fmt.Sprintf(
+				"git clone --depth 1 "+
+					"https://github.com/ggerganov/"+
+					"llama.cpp.git %s",
+				d.cfg.RepoDir,
+			),
+		); cloneErr != nil {
+			return fmt.Errorf("clone llama.cpp: %w",
+				cloneErr)
+		}
+	}
+
+	// Build with RPC + CUDA, fallback to RPC-only.
+	fmt.Printf(
+		"[llamacpp] building llama.cpp with RPC on %s\n",
+		d.cfg.Host,
+	)
+	buildCmd := fmt.Sprintf(
+		"cd %s && "+
+			"(cmake -B build -DGGML_RPC=ON "+
+			"-DGGML_CUDA=ON "+
+			"-DCMAKE_BUILD_TYPE=Release 2>&1 || "+
+			"cmake -B build -DGGML_RPC=ON "+
+			"-DCMAKE_BUILD_TYPE=Release 2>&1) && "+
+			"cmake --build build --config Release "+
+			"-j$(nproc) 2>&1",
+		d.cfg.RepoDir,
+	)
+	buildCtx, cancel := context.WithTimeout(
+		ctx, 10*time.Minute,
+	)
+	defer cancel()
+	if _, buildErr := d.sshRun(
+		buildCtx, buildCmd,
+	); buildErr != nil {
+		return fmt.Errorf(
+			"build llama.cpp with RPC: %w", buildErr,
+		)
+	}
+
+	fmt.Printf(
+		"[llamacpp] RPC build complete on %s\n",
+		d.cfg.Host,
+	)
+	return nil
+}
+
 // HealthCheck returns the health status of a running instance.
 func (d *LlamaCppDeployer) HealthCheck(
 	ctx context.Context, port int,

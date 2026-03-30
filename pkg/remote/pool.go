@@ -85,6 +85,27 @@ const (
 	BackendLlamaCpp Backend = "llamacpp"
 )
 
+// HostConfig describes a single host in a multi-host vision
+// pool. Each host can run Ollama or llama.cpp for vision
+// inference.
+type HostConfig struct {
+	// Host is the hostname or IP address.
+	Host string
+	// User is the SSH user for deployment.
+	User string
+	// Port is the SSH port (default 22).
+	Port int
+	// Model is the vision model for this host.
+	// Defaults to the pool-level model if empty.
+	Model string
+	// Backend selects "ollama" or "llamacpp".
+	// Defaults to "ollama".
+	Backend Backend
+	// APIPort is the Ollama or llama-server port.
+	// Defaults to 11434 for Ollama, 8090 for llama.cpp.
+	APIPort int
+}
+
 // PoolConfig configures a VisionPool.
 type PoolConfig struct {
 	// Host is the remote server hostname.
@@ -113,6 +134,13 @@ type PoolConfig struct {
 	// LlamaCpp holds llama.cpp-specific configuration.
 	// Only used when InferenceBackend == BackendLlamaCpp.
 	LlamaCpp *LlamaCppConfig
+
+	// Hosts lists multiple hosts for distributed vision
+	// inference. When non-empty, slots are distributed
+	// round-robin across hosts. If one host fails during
+	// EnsureReady, it is removed and remaining hosts are
+	// used. Takes precedence over the single Host field.
+	Hosts []HostConfig
 }
 
 // VisionPool manages a set of VisionSlots, one per
@@ -353,4 +381,252 @@ func (p *VisionPool) Shutdown(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// hostEntry tracks a live host in a MultiHostPool along
+// with its deployer and readiness state.
+type hostEntry struct {
+	cfg      HostConfig
+	deployer *Deployer
+	ready    bool
+}
+
+// MultiHostPool distributes vision inference slots across
+// multiple hosts. It creates an Ollama deployer per host
+// and assigns slots round-robin. If a host fails during
+// EnsureReady, it is removed and the remaining hosts
+// absorb its share of the work.
+type MultiHostPool struct {
+	hosts []*hostEntry
+	model string
+	slots map[string]*VisionSlot
+	mu    sync.Mutex
+}
+
+// NewMultiHostPool creates a pool that distributes vision
+// work across the given hosts. Each host gets its own
+// Ollama deployer. The model parameter is used as a default
+// for hosts that do not specify their own model.
+func NewMultiHostPool(
+	hosts []HostConfig, model string,
+) *MultiHostPool {
+	if model == "" {
+		model = "llava:7b"
+	}
+
+	entries := make([]*hostEntry, 0, len(hosts))
+	for _, h := range hosts {
+		if h.Host == "" {
+			continue
+		}
+		if h.Port == 0 {
+			h.Port = 22
+		}
+		if h.APIPort == 0 {
+			if h.Backend == BackendLlamaCpp {
+				h.APIPort = 8090
+			} else {
+				h.APIPort = 11434
+			}
+		}
+		m := h.Model
+		if m == "" {
+			m = model
+		}
+		deployer := NewDeployer(Config{
+			Host:       h.Host,
+			User:       h.User,
+			Port:       h.Port,
+			Model:      m,
+			OllamaPort: h.APIPort,
+		})
+		entries = append(entries, &hostEntry{
+			cfg:      h,
+			deployer: deployer,
+		})
+	}
+
+	return &MultiHostPool{
+		hosts: entries,
+		model: model,
+		slots: make(map[string]*VisionSlot),
+	}
+}
+
+// EnsureReady verifies each host's Ollama backend is
+// running and the model is pulled. Hosts that fail are
+// marked not-ready and excluded from slot assignment.
+// Returns an error only if ALL hosts fail.
+func (mp *MultiHostPool) EnsureReady(
+	ctx context.Context,
+) error {
+	var readyCount int
+	for _, h := range mp.hosts {
+		endpoint, err := h.deployer.EnsureReady(ctx)
+		if err != nil {
+			fmt.Printf(
+				"[multi-host] %s failed: %v "+
+					"(excluding from pool)\n",
+				h.cfg.Host, err,
+			)
+			h.ready = false
+			continue
+		}
+		h.ready = true
+		readyCount++
+		fmt.Printf(
+			"[multi-host] %s ready at %s\n",
+			h.cfg.Host, endpoint,
+		)
+	}
+	if readyCount == 0 {
+		return fmt.Errorf(
+			"multi-host pool: all %d hosts failed",
+			len(mp.hosts),
+		)
+	}
+	fmt.Printf(
+		"[multi-host] %d/%d hosts ready\n",
+		readyCount, len(mp.hosts),
+	)
+	return nil
+}
+
+// readyHosts returns only the hosts that passed
+// EnsureReady.
+func (mp *MultiHostPool) readyHosts() []*hostEntry {
+	var ready []*hostEntry
+	for _, h := range mp.hosts {
+		if h.ready {
+			ready = append(ready, h)
+		}
+	}
+	return ready
+}
+
+// AssignSlots distributes targets round-robin across ready
+// hosts. Each slot's endpoint points to the assigned host's
+// Ollama API.
+func (mp *MultiHostPool) AssignSlots(
+	targets []SlotTarget,
+) []*VisionSlot {
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+
+	ready := mp.readyHosts()
+	if len(ready) == 0 {
+		fmt.Println(
+			"[multi-host] no ready hosts for " +
+				"slot assignment",
+		)
+		return nil
+	}
+
+	var result []*VisionSlot
+	for i, t := range targets {
+		host := ready[i%len(ready)]
+
+		id := fmt.Sprintf("%s-%s", t.Platform, t.Device)
+		if id == fmt.Sprintf("%s-", t.Platform) {
+			id = fmt.Sprintf("%s-%d", t.Platform, i)
+		}
+
+		endpoint := fmt.Sprintf(
+			"http://%s:%d",
+			host.cfg.Host, host.cfg.APIPort,
+		)
+
+		slot := &VisionSlot{
+			ID:       id,
+			Platform: t.Platform,
+			Device:   t.Device,
+			Endpoint: endpoint,
+			Port:     host.cfg.APIPort,
+		}
+		mp.slots[id] = slot
+		result = append(result, slot)
+
+		fmt.Printf(
+			"[multi-host] slot %s -> %s (%s)\n",
+			id, endpoint, host.cfg.Host,
+		)
+	}
+	return result
+}
+
+// GetSlot returns the slot for the given platform and
+// device.
+func (mp *MultiHostPool) GetSlot(
+	platform, device string,
+) *VisionSlot {
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+
+	id := fmt.Sprintf("%s-%s", platform, device)
+	if slot, ok := mp.slots[id]; ok {
+		return slot
+	}
+	for _, slot := range mp.slots {
+		if slot.Platform == platform {
+			return slot
+		}
+	}
+	return nil
+}
+
+// AllSlots returns all assigned slots.
+func (mp *MultiHostPool) AllSlots() []*VisionSlot {
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+
+	result := make([]*VisionSlot, 0, len(mp.slots))
+	for _, s := range mp.slots {
+		result = append(result, s)
+	}
+	return result
+}
+
+// Size returns the number of assigned slots.
+func (mp *MultiHostPool) Size() int {
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+	return len(mp.slots)
+}
+
+// ReadyHostCount returns how many hosts are available for
+// inference.
+func (mp *MultiHostPool) ReadyHostCount() int {
+	return len(mp.readyHosts())
+}
+
+// PrintStats logs per-slot usage statistics.
+func (mp *MultiHostPool) PrintStats() {
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+
+	for _, s := range mp.slots {
+		st := s.Stats()
+		avg := time.Duration(0)
+		if st.TotalCalls > 0 {
+			avg = st.TotalDuration / time.Duration(
+				st.TotalCalls,
+			)
+		}
+		fmt.Printf(
+			"[multi-host] %s: %d calls, "+
+				"avg %v, %d errors\n",
+			s.ID, st.TotalCalls, avg.Round(
+				time.Millisecond,
+			), st.Errors,
+		)
+	}
+}
+
+// Shutdown prints statistics. Ollama instances are left
+// running (they are system services, not started by us
+// in shared mode).
+func (mp *MultiHostPool) Shutdown(
+	ctx context.Context,
+) {
+	mp.PrintStats()
 }
