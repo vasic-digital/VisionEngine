@@ -16,7 +16,7 @@ import (
 
 const (
 	geminiDefaultBaseURL = "https://generativelanguage.googleapis.com/v1beta"
-	geminiDefaultModel   = "gemini-2.0-flash"
+	geminiDefaultModel   = "gemini-2.5-flash"
 	geminiMaxImageSize   = 20 * 1024 * 1024 // 20 MB
 )
 
