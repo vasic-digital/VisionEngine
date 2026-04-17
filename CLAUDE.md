@@ -1,5 +1,17 @@
 # CLAUDE.md
 
+## MANDATORY: Project-Agnostic / 100% Decoupled
+
+**This module is part of HelixQA's dependency graph and MUST remain 100% decoupled from any consuming project. It is designed for generic use with ANY project, not just ATMOSphere.**
+
+- **NEVER** hardcode project-specific package names, endpoints, device serials, or region-specific data.
+- **NEVER** import anything from the consuming project.
+- **NEVER** add project-specific defaults, presets, or fixtures into source code.
+- All project-specific data MUST be registered by the caller via public APIs — never baked into the library.
+- Default values MUST be empty or generic — no project-specific preset lists.
+
+**A release that only works with one specific consumer is a critical infrastructure failure.** Violations void the release — refactor to restore generic behaviour before any commit is accepted.
+
 ## MANDATORY: No CI/CD Pipelines
 
 **NO GitHub Actions, GitLab CI/CD, or any automated pipeline may exist in this repository!**
