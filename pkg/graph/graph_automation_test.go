@@ -35,7 +35,7 @@ func TestAutomation_PackageCompiles(t *testing.T) {
 
 func TestAutomation_GoVet(t *testing.T) {
 	if testing.Short() {
-		t.Skip("skipping go vet in short mode")
+		t.Skip("skipping go vet in short mode")  // SKIP-OK: #short-mode
 	}
 	cmd := exec.Command("go", "vet", "./...")
 	cmd.Dir = findProjectRoot(t)
