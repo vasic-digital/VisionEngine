@@ -1,0 +1,8 @@
+Commit: a0e943e79040747ca5abcff9f4dc3aa0332747f0
+Branch: HEAD
+a0e943e Add GitHub Sponsors button
+23c870f security: Add mandatory NO SUDO/ROOT execution constraint
+a745182 fix: update Gemini default model to gemini-2.5-flash
+1f4f1b2 feat: Astica.AI vision + local model probing + dual model selection
+6e7be8c feat: distributed vision + QA priority + VLC player + cover images
+

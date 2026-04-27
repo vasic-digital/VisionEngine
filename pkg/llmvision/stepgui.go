@@ -15,39 +15,41 @@ import (
 )
 
 const (
-	geminiDefaultBaseURL = "https://generativelanguage.googleapis.com/v1beta"
-	geminiDefaultModel   = "gemini-2.5-flash"
-	geminiMaxImageSize   = 20 * 1024 * 1024 // 20 MB
+	stepGUIDefaultBaseURL = "https://api.stepfun.com/v1"
+	stepGUIDefaultModel   = "step-1.5v-mini"
+	stepGUIMaxImageSize   = 20 * 1024 * 1024 // 20 MB
 )
 
-// GeminiProvider implements VisionProvider for Google Gemini.
-type GeminiProvider struct {
+// StepGUIProvider implements VisionProvider for Stepfun Step-GUI.
+// Specialized for GUI interaction and UI element grounding.
+// Uses OpenAI-compatible API format.
+type StepGUIProvider struct {
 	config     ProviderConfig
 	httpClient *http.Client
 }
 
-// NewGeminiProvider creates a new Gemini vision provider.
-func NewGeminiProvider(config ProviderConfig) (*GeminiProvider, error) {
+// NewStepGUIProvider creates a new Step-GUI vision provider.
+func NewStepGUIProvider(config ProviderConfig) (*StepGUIProvider, error) {
 	if config.APIKey == "" {
 		return nil, ErrNoAPIKey
 	}
 	if config.BaseURL == "" {
-		config.BaseURL = geminiDefaultBaseURL
+		config.BaseURL = stepGUIDefaultBaseURL
 	}
 	if config.Model == "" {
-		config.Model = geminiDefaultModel
+		config.Model = stepGUIDefaultModel
 	}
 	if config.MaxTokens == 0 {
 		config.MaxTokens = 4096
 	}
 	if config.MaxImageSize == 0 {
-		config.MaxImageSize = geminiMaxImageSize
+		config.MaxImageSize = stepGUIMaxImageSize
 	}
 	timeout := 60 * time.Second
 	if config.TimeoutSecs > 0 {
 		timeout = time.Duration(config.TimeoutSecs) * time.Second
 	}
-	return &GeminiProvider{
+	return &StepGUIProvider{
 		config: config,
 		httpClient: &http.Client{
 			Timeout: timeout,
@@ -55,23 +57,23 @@ func NewGeminiProvider(config ProviderConfig) (*GeminiProvider, error) {
 	}, nil
 }
 
-// Name returns "gemini".
-func (p *GeminiProvider) Name() string {
-	return "gemini"
+// Name returns "stepgui".
+func (p *StepGUIProvider) Name() string {
+	return "stepgui"
 }
 
 // SupportsVision returns true.
-func (p *GeminiProvider) SupportsVision() bool {
+func (p *StepGUIProvider) SupportsVision() bool {
 	return true
 }
 
 // MaxImageSize returns the max image size.
-func (p *GeminiProvider) MaxImageSize() int {
+func (p *StepGUIProvider) MaxImageSize() int {
 	return p.config.MaxImageSize
 }
 
-// AnalyzeImage sends an image to Gemini for analysis.
-func (p *GeminiProvider) AnalyzeImage(ctx context.Context, image []byte, prompt string) (string, error) {
+// AnalyzeImage sends an image to Step-GUI for analysis.
+func (p *StepGUIProvider) AnalyzeImage(ctx context.Context, image []byte, prompt string) (string, error) {
 	if err := validateImage(image, p.config.MaxImageSize); err != nil {
 		return "", err
 	}
@@ -81,29 +83,29 @@ func (p *GeminiProvider) AnalyzeImage(ctx context.Context, image []byte, prompt 
 
 	encoded := base64.StdEncoding.EncodeToString(image)
 	body := map[string]any{
-		"contents": []map[string]any{
+		"model": p.config.Model,
+		"messages": []map[string]any{
 			{
-				"parts": []map[string]any{
-					{"text": prompt},
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "text", "text": prompt},
 					{
-						"inline_data": map[string]string{
-							"mime_type": "image/png",
-							"data":      encoded,
+						"type": "image_url",
+						"image_url": map[string]string{
+							"url": fmt.Sprintf("data:image/png;base64,%s", encoded),
 						},
 					},
 				},
 			},
 		},
-		"generationConfig": map[string]any{
-			"maxOutputTokens": p.config.MaxTokens,
-		},
+		"max_tokens": p.config.MaxTokens,
 	}
 
 	return p.sendRequest(ctx, body)
 }
 
-// CompareImages sends two images to Gemini for comparison.
-func (p *GeminiProvider) CompareImages(ctx context.Context, img1, img2 []byte, prompt string) (string, error) {
+// CompareImages sends two images to Step-GUI for comparison.
+func (p *StepGUIProvider) CompareImages(ctx context.Context, img1, img2 []byte, prompt string) (string, error) {
 	if err := validateImage(img1, p.config.MaxImageSize); err != nil {
 		return "", err
 	}
@@ -117,47 +119,46 @@ func (p *GeminiProvider) CompareImages(ctx context.Context, img1, img2 []byte, p
 	enc1 := base64.StdEncoding.EncodeToString(img1)
 	enc2 := base64.StdEncoding.EncodeToString(img2)
 	body := map[string]any{
-		"contents": []map[string]any{
+		"model": p.config.Model,
+		"messages": []map[string]any{
 			{
-				"parts": []map[string]any{
-					{"text": prompt},
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "text", "text": prompt},
 					{
-						"inline_data": map[string]string{
-							"mime_type": "image/png",
-							"data":      enc1,
+						"type": "image_url",
+						"image_url": map[string]string{
+							"url": fmt.Sprintf("data:image/png;base64,%s", enc1),
 						},
 					},
 					{
-						"inline_data": map[string]string{
-							"mime_type": "image/png",
-							"data":      enc2,
+						"type": "image_url",
+						"image_url": map[string]string{
+							"url": fmt.Sprintf("data:image/png;base64,%s", enc2),
 						},
 					},
 				},
 			},
 		},
-		"generationConfig": map[string]any{
-			"maxOutputTokens": p.config.MaxTokens,
-		},
+		"max_tokens": p.config.MaxTokens,
 	}
 
 	return p.sendRequest(ctx, body)
 }
 
-func (p *GeminiProvider) sendRequest(ctx context.Context, body map[string]any) (string, error) {
+func (p *StepGUIProvider) sendRequest(ctx context.Context, body map[string]any) (string, error) {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s",
-		p.config.BaseURL, p.config.Model, p.config.APIKey)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		p.config.BaseURL+"/chat/completions", bytes.NewReader(jsonBody))
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+p.config.APIKey)
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
@@ -178,20 +179,18 @@ func (p *GeminiProvider) sendRequest(ctx context.Context, body map[string]any) (
 	}
 
 	var result struct {
-		Candidates []struct {
-			Content struct {
-				Parts []struct {
-					Text string `json:"text"`
-				} `json:"parts"`
-			} `json:"content"`
-		} `json:"candidates"`
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return "", fmt.Errorf("%w: %v", ErrInvalidResponse, err)
 	}
-	if len(result.Candidates) == 0 || len(result.Candidates[0].Content.Parts) == 0 {
-		return "", fmt.Errorf("%w: no content in response", ErrInvalidResponse)
+	if len(result.Choices) == 0 {
+		return "", fmt.Errorf("%w: no choices in response", ErrInvalidResponse)
 	}
 
-	return result.Candidates[0].Content.Parts[0].Text, nil
+	return result.Choices[0].Message.Content, nil
 }

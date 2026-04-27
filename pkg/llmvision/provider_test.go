@@ -442,6 +442,186 @@ func TestQwenProvider_AnalyzeImage_EmptyChoices(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalidResponse)
 }
 
+// --- Kimi Provider Tests ---
+
+func TestNewKimiProvider_NoAPIKey(t *testing.T) {
+	_, err := NewKimiProvider(ProviderConfig{})
+	assert.ErrorIs(t, err, ErrNoAPIKey)
+}
+
+func TestNewKimiProvider_Defaults(t *testing.T) {
+	p, err := NewKimiProvider(ProviderConfig{APIKey: "kimi-test"})
+	require.NoError(t, err)
+	assert.Equal(t, "kimi", p.Name())
+	assert.True(t, p.SupportsVision())
+	assert.Equal(t, kimiMaxImageSize, p.MaxImageSize())
+}
+
+func TestKimiProvider_AnalyzeImage_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/chat/completions", r.URL.Path)
+		assert.Contains(t, r.Header.Get("Authorization"), "Bearer kimi-test")
+
+		resp := map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]string{"content": "A media player interface"}},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p, _ := NewKimiProvider(ProviderConfig{APIKey: "kimi-test", BaseURL: server.URL})
+	result, err := p.AnalyzeImage(context.Background(), []byte("img"), "Describe")
+	require.NoError(t, err)
+	assert.Equal(t, "A media player interface", result)
+}
+
+func TestKimiProvider_AnalyzeImage_EmptyImage(t *testing.T) {
+	p, _ := NewKimiProvider(ProviderConfig{APIKey: "kimi-test"})
+	_, err := p.AnalyzeImage(context.Background(), []byte{}, "prompt")
+	assert.ErrorIs(t, err, ErrEmptyImage)
+}
+
+func TestKimiProvider_CompareImages_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]string{"content": "Button position changed"}},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p, _ := NewKimiProvider(ProviderConfig{APIKey: "kimi-test", BaseURL: server.URL})
+	result, err := p.CompareImages(context.Background(), []byte("img1"), []byte("img2"), "Compare")
+	require.NoError(t, err)
+	assert.Equal(t, "Button position changed", result)
+}
+
+func TestKimiProvider_AnalyzeImage_EmptyChoices(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"choices": []any{}})
+	}))
+	defer server.Close()
+
+	p, _ := NewKimiProvider(ProviderConfig{APIKey: "kimi-test", BaseURL: server.URL})
+	_, err := p.AnalyzeImage(context.Background(), []byte("img"), "prompt")
+	assert.ErrorIs(t, err, ErrInvalidResponse)
+}
+
+func TestKimiProvider_RateLimited(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	p, _ := NewKimiProvider(ProviderConfig{APIKey: "kimi-test", BaseURL: server.URL})
+	_, err := p.AnalyzeImage(context.Background(), []byte("img"), "prompt")
+	assert.ErrorIs(t, err, ErrRateLimited)
+}
+
+func TestKimiProvider_CustomTimeout(t *testing.T) {
+	p, err := NewKimiProvider(ProviderConfig{APIKey: "kimi-test", TimeoutSecs: 30})
+	require.NoError(t, err)
+	assert.NotNil(t, p.httpClient)
+}
+
+// --- StepGUI Provider Tests ---
+
+func TestNewStepGUIProvider_NoAPIKey(t *testing.T) {
+	_, err := NewStepGUIProvider(ProviderConfig{})
+	assert.ErrorIs(t, err, ErrNoAPIKey)
+}
+
+func TestNewStepGUIProvider_Defaults(t *testing.T) {
+	p, err := NewStepGUIProvider(ProviderConfig{APIKey: "step-test"})
+	require.NoError(t, err)
+	assert.Equal(t, "stepgui", p.Name())
+	assert.True(t, p.SupportsVision())
+	assert.Equal(t, stepGUIMaxImageSize, p.MaxImageSize())
+}
+
+func TestStepGUIProvider_AnalyzeImage_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/chat/completions", r.URL.Path)
+		assert.Contains(t, r.Header.Get("Authorization"), "Bearer step-test")
+
+		resp := map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]string{"content": "Login button at (320, 480)"}},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p, _ := NewStepGUIProvider(ProviderConfig{APIKey: "step-test", BaseURL: server.URL})
+	result, err := p.AnalyzeImage(context.Background(), []byte("img"), "Find the login button")
+	require.NoError(t, err)
+	assert.Equal(t, "Login button at (320, 480)", result)
+}
+
+func TestStepGUIProvider_AnalyzeImage_EmptyImage(t *testing.T) {
+	p, _ := NewStepGUIProvider(ProviderConfig{APIKey: "step-test"})
+	_, err := p.AnalyzeImage(context.Background(), []byte{}, "prompt")
+	assert.ErrorIs(t, err, ErrEmptyImage)
+}
+
+func TestStepGUIProvider_CompareImages_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]string{"content": "Navigation drawer opened"}},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p, _ := NewStepGUIProvider(ProviderConfig{APIKey: "step-test", BaseURL: server.URL})
+	result, err := p.CompareImages(context.Background(), []byte("img1"), []byte("img2"), "Compare")
+	require.NoError(t, err)
+	assert.Equal(t, "Navigation drawer opened", result)
+}
+
+func TestStepGUIProvider_AnalyzeImage_EmptyChoices(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"choices": []any{}})
+	}))
+	defer server.Close()
+
+	p, _ := NewStepGUIProvider(ProviderConfig{APIKey: "step-test", BaseURL: server.URL})
+	_, err := p.AnalyzeImage(context.Background(), []byte("img"), "prompt")
+	assert.ErrorIs(t, err, ErrInvalidResponse)
+}
+
+func TestStepGUIProvider_RateLimited(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	p, _ := NewStepGUIProvider(ProviderConfig{APIKey: "step-test", BaseURL: server.URL})
+	_, err := p.AnalyzeImage(context.Background(), []byte("img"), "prompt")
+	assert.ErrorIs(t, err, ErrRateLimited)
+}
+
+func TestStepGUIProvider_CustomTimeout(t *testing.T) {
+	p, err := NewStepGUIProvider(ProviderConfig{APIKey: "step-test", TimeoutSecs: 30})
+	require.NoError(t, err)
+	assert.NotNil(t, p.httpClient)
+}
+
 // --- Fallback Provider Tests ---
 
 func TestNewFallbackProvider_Empty(t *testing.T) {
@@ -575,6 +755,14 @@ func TestGeminiProvider_ImplementsInterface(t *testing.T) {
 
 func TestQwenProvider_ImplementsInterface(t *testing.T) {
 	var _ VisionProvider = (*QwenProvider)(nil)
+}
+
+func TestKimiProvider_ImplementsInterface(t *testing.T) {
+	var _ VisionProvider = (*KimiProvider)(nil)
+}
+
+func TestStepGUIProvider_ImplementsInterface(t *testing.T) {
+	var _ VisionProvider = (*StepGUIProvider)(nil)
 }
 
 func TestFallbackProvider_ImplementsInterface(t *testing.T) {

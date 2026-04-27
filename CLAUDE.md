@@ -57,8 +57,42 @@ All issues must be fixed by addressing root causes. No test may ever be removed,
 - `pkg/analyzer/` - Core interfaces and types
 - `pkg/graph/` - NavigationGraph (most important, imported by HelixQA)
 - `pkg/llmvision/` - LLM Vision API adapters (pure Go HTTP)
+  - `openai.go` - OpenAI GPT-4o vision
+  - `anthropic.go` - Anthropic Claude vision
+  - `gemini.go` - Google Gemini vision
+  - `qwen.go` - Qwen VL vision
+  - `kimi.go` - Kimi/Moonshot vision
+  - `stepgui.go` - StepFun vision
+  - `ollama.go` - Local Ollama vision (free, no rate limits)
+  - `fallback.go` - FallbackProvider for multi-provider resilience
+- `pkg/remote/` - Remote Ollama deployment via SSH, hardware detection, llama.cpp RPC
 - `pkg/opencv/` - OpenCV stubs (real impl behind `//go:build vision`)
 - `pkg/config/` - Configuration
+
+## Vision Providers
+
+VisionEngine supports multiple vision providers with automatic fallback:
+
+- **Cloud providers**: OpenAI, Anthropic, Gemini, Qwen, Kimi, StepFun
+- **Local providers**: Ollama (any vision model, e.g. `minicpm-v:8b`, `llava:7b`)
+- **Distributed inference**: llama.cpp RPC splits large models across multiple hosts
+
+Provider selection is set via `HELIX_VISION_PROVIDER` (default: `auto`). In `auto` mode, the system probes all configured providers and uses the FallbackProvider for resilience.
+
+## Local Model Support
+
+Ollama integration (`pkg/llmvision/ollama.go`) provides:
+- Zero-cost local inference with no rate limits
+- Automatic model availability checking
+- Compatible with any Ollama vision model
+- Remote Ollama auto-deployment via SSH (`pkg/remote/`)
+
+## Distributed Vision
+
+The `pkg/remote/` package supports:
+- Hardware detection (GPU/CPU/RAM) on remote hosts
+- llama.cpp RPC worker management for splitting models across machines
+- Automatic Ollama installation and model pulling on remote hosts
 
 ## Build Tags
 
